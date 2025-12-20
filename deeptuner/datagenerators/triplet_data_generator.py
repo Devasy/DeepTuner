@@ -13,6 +13,17 @@ class TripletDataGenerator(tf.keras.utils.Sequence):
         self.num_classes = num_classes
         self.label_encoder = LabelEncoder()
         self.encoded_labels = self.label_encoder.fit_transform(labels)
+
+        # Optimize: Pre-group paths by label to avoid O(N) search in _generate_triplet_batch
+        self.label_to_paths = {}
+        for path, label in zip(self.image_paths, self.encoded_labels):
+            if label not in self.label_to_paths:
+                self.label_to_paths[label] = []
+            self.label_to_paths[label].append(path)
+
+        if len(self.label_to_paths) < 2:
+            raise ValueError("TripletDataGenerator requires at least 2 classes to generate negative pairs.")
+
         self.image_data_generator = ImageDataGenerator(preprocessing_function=resnet.preprocess_input)
         self.on_epoch_end()
         print(f"Initialized TripletDataGenerator with {len(self.image_paths)} images")
@@ -36,16 +47,23 @@ class TripletDataGenerator(tf.keras.utils.Sequence):
         positive_images = []
         negative_images = []
 
+        # Get list of all unique labels for negative sampling
+        all_labels = list(self.label_to_paths.keys())
+
         for i in range(len(batch_image_paths)):
             anchor_path = batch_image_paths[i]
             anchor_label = batch_labels[i]
 
-            positive_path = np.random.choice(
-                [p for p, l in zip(self.image_paths, self.encoded_labels) if l == anchor_label]
-            )
-            negative_path = np.random.choice(
-                [p for p, l in zip(self.image_paths, self.encoded_labels) if l != anchor_label]
-            )
+            # Optimized: O(1) lookup instead of O(N) search
+            positive_path = np.random.choice(self.label_to_paths[anchor_label])
+
+            # Optimized: Pick a random different label, then pick a random path from it
+            # This avoids iterating over all non-matching paths
+            negative_label = anchor_label
+            while negative_label == anchor_label:
+                negative_label = np.random.choice(all_labels)
+
+            negative_path = np.random.choice(self.label_to_paths[negative_label])
 
             anchor_image = load_img(anchor_path, target_size=self.image_size)
             positive_image = load_img(positive_path, target_size=self.image_size)

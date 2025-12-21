@@ -2,6 +2,7 @@ import tensorflow as tf
 from tensorflow.keras.preprocessing.image import ImageDataGenerator, load_img, img_to_array
 from sklearn.preprocessing import LabelEncoder
 import numpy as np
+import random
 from tensorflow.keras.applications import resnet50 as resnet
 
 class TripletDataGenerator(tf.keras.utils.Sequence):
@@ -14,6 +15,14 @@ class TripletDataGenerator(tf.keras.utils.Sequence):
         self.label_encoder = LabelEncoder()
         self.encoded_labels = self.label_encoder.fit_transform(labels)
         self.image_data_generator = ImageDataGenerator(preprocessing_function=resnet.preprocess_input)
+
+        # Precompute label to paths map for O(1) positive sampling
+        self.label_to_paths = {}
+        for path, label in zip(self.image_paths, self.encoded_labels):
+            if label not in self.label_to_paths:
+                self.label_to_paths[label] = []
+            self.label_to_paths[label].append(path)
+
         self.on_epoch_end()
         print(f"Initialized TripletDataGenerator with {len(self.image_paths)} images")
 
@@ -40,12 +49,15 @@ class TripletDataGenerator(tf.keras.utils.Sequence):
             anchor_path = batch_image_paths[i]
             anchor_label = batch_labels[i]
 
-            positive_path = np.random.choice(
-                [p for p, l in zip(self.image_paths, self.encoded_labels) if l == anchor_label]
-            )
-            negative_path = np.random.choice(
-                [p for p, l in zip(self.image_paths, self.encoded_labels) if l != anchor_label]
-            )
+            # Optimized positive sampling: O(1) lookup
+            positive_path = random.choice(self.label_to_paths[anchor_label])
+
+            # Optimized negative sampling: Rejection sampling O(1) expected
+            while True:
+                idx = np.random.randint(0, len(self.image_paths))
+                if self.encoded_labels[idx] != anchor_label:
+                    negative_path = self.image_paths[idx]
+                    break
 
             anchor_image = load_img(anchor_path, target_size=self.image_size)
             positive_image = load_img(positive_path, target_size=self.image_size)

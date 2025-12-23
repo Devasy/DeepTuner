@@ -17,6 +17,13 @@ class TripletDataGenerator(tf.keras.utils.Sequence):
         self.on_epoch_end()
         print(f"Initialized TripletDataGenerator with {len(self.image_paths)} images")
 
+    def _build_index(self):
+        """Builds an index of label -> image paths for O(1) access."""
+        self.unique_labels = np.unique(self.encoded_labels)
+        self.label_to_paths = {label: [] for label in self.unique_labels}
+        for path, label in zip(self.image_paths, self.encoded_labels):
+            self.label_to_paths[label].append(path)
+
     def __len__(self):
         return max(1, len(self.image_paths) // self.batch_size)  # Ensure at least one batch
 
@@ -30,6 +37,7 @@ class TripletDataGenerator(tf.keras.utils.Sequence):
         combined = list(zip(self.image_paths, self.encoded_labels))
         np.random.shuffle(combined)
         self.image_paths[:], self.encoded_labels[:] = zip(*combined)
+        self._build_index()
 
     def _generate_triplet_batch(self, batch_image_paths, batch_labels):
         anchor_images = []
@@ -40,12 +48,19 @@ class TripletDataGenerator(tf.keras.utils.Sequence):
             anchor_path = batch_image_paths[i]
             anchor_label = batch_labels[i]
 
-            positive_path = np.random.choice(
-                [p for p, l in zip(self.image_paths, self.encoded_labels) if l == anchor_label]
-            )
-            negative_path = np.random.choice(
-                [p for p, l in zip(self.image_paths, self.encoded_labels) if l != anchor_label]
-            )
+            # Optimized selection using pre-computed index
+            positive_path = np.random.choice(self.label_to_paths[anchor_label])
+
+            # Select a random negative label different from anchor_label
+            negative_labels = self.unique_labels[self.unique_labels != anchor_label]
+            if len(negative_labels) > 0:
+                negative_label = np.random.choice(negative_labels)
+                negative_path = np.random.choice(self.label_to_paths[negative_label])
+            else:
+                # Fallback or error if only 1 class exists (cannot form triplet)
+                # For robustness, we might just pick a random path if no negatives exist
+                # but mathematically triplet loss requires negatives.
+                raise ValueError("Cannot select negative sample: only 1 class found.")
 
             anchor_image = load_img(anchor_path, target_size=self.image_size)
             positive_image = load_img(positive_path, target_size=self.image_size)

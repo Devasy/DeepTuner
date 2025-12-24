@@ -14,6 +14,22 @@ class TripletDataGenerator(tf.keras.utils.Sequence):
         self.label_encoder = LabelEncoder()
         self.encoded_labels = self.label_encoder.fit_transform(labels)
         self.image_data_generator = ImageDataGenerator(preprocessing_function=resnet.preprocess_input)
+
+        # Precompute label to paths mapping for O(1) access
+        self.unique_labels = np.unique(self.encoded_labels)
+        if len(self.unique_labels) < 2:
+            raise ValueError("TripletDataGenerator requires at least 2 classes.")
+
+        self.label_to_paths = {}
+        for p, label in zip(self.image_paths, self.encoded_labels):
+            if label not in self.label_to_paths:
+                self.label_to_paths[label] = []
+            self.label_to_paths[label].append(p)
+
+        # Convert to numpy arrays for faster sampling
+        for label in self.label_to_paths:
+            self.label_to_paths[label] = np.array(self.label_to_paths[label])
+
         self.on_epoch_end()
         print(f"Initialized TripletDataGenerator with {len(self.image_paths)} images")
 
@@ -40,12 +56,14 @@ class TripletDataGenerator(tf.keras.utils.Sequence):
             anchor_path = batch_image_paths[i]
             anchor_label = batch_labels[i]
 
-            positive_path = np.random.choice(
-                [p for p, l in zip(self.image_paths, self.encoded_labels) if l == anchor_label]
-            )
-            negative_path = np.random.choice(
-                [p for p, l in zip(self.image_paths, self.encoded_labels) if l != anchor_label]
-            )
+            positive_path = np.random.choice(self.label_to_paths[anchor_label])
+
+            # Rejection sampling for negative example
+            while True:
+                idx = np.random.randint(len(self.image_paths))
+                if self.encoded_labels[idx] != anchor_label:
+                    negative_path = self.image_paths[idx]
+                    break
 
             anchor_image = load_img(anchor_path, target_size=self.image_size)
             positive_image = load_img(positive_path, target_size=self.image_size)

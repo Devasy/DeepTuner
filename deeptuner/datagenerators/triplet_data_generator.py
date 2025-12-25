@@ -3,6 +3,7 @@ from tensorflow.keras.preprocessing.image import ImageDataGenerator, load_img, i
 from sklearn.preprocessing import LabelEncoder
 import numpy as np
 from tensorflow.keras.applications import resnet50 as resnet
+from collections import defaultdict
 
 class TripletDataGenerator(tf.keras.utils.Sequence):
     def __init__(self, image_paths, labels, batch_size, image_size, num_classes):
@@ -14,6 +15,16 @@ class TripletDataGenerator(tf.keras.utils.Sequence):
         self.label_encoder = LabelEncoder()
         self.encoded_labels = self.label_encoder.fit_transform(labels)
         self.image_data_generator = ImageDataGenerator(preprocessing_function=resnet.preprocess_input)
+
+        # Precompute label_to_paths map for O(1) positive sampling
+        self.label_to_paths = defaultdict(list)
+        for path, label in zip(self.image_paths, self.encoded_labels):
+            self.label_to_paths[label].append(path)
+
+        # Convert lists to numpy arrays for faster indexing
+        for label in self.label_to_paths:
+            self.label_to_paths[label] = np.array(self.label_to_paths[label])
+
         self.on_epoch_end()
         print(f"Initialized TripletDataGenerator with {len(self.image_paths)} images")
 
@@ -40,12 +51,16 @@ class TripletDataGenerator(tf.keras.utils.Sequence):
             anchor_path = batch_image_paths[i]
             anchor_label = batch_labels[i]
 
-            positive_path = np.random.choice(
-                [p for p, l in zip(self.image_paths, self.encoded_labels) if l == anchor_label]
-            )
-            negative_path = np.random.choice(
-                [p for p, l in zip(self.image_paths, self.encoded_labels) if l != anchor_label]
-            )
+            # Optimized positive sampling: O(1) using precomputed map
+            positive_path = np.random.choice(self.label_to_paths[anchor_label])
+
+            # Optimized negative sampling: Rejection sampling
+            # This is O(1) on average unless one class dominates the dataset (>50%)
+            while True:
+                idx = np.random.randint(len(self.image_paths))
+                if self.encoded_labels[idx] != anchor_label:
+                    negative_path = self.image_paths[idx]
+                    break
 
             anchor_image = load_img(anchor_path, target_size=self.image_size)
             positive_image = load_img(positive_path, target_size=self.image_size)
